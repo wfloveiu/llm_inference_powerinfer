@@ -4103,7 +4103,8 @@ struct ggml_tensor * ggml_mul_mat_idx_upscale(
         struct ggml_tensor  * b,
         struct ggml_tensor  * sparse_idx,
         struct ggml_tensor  * gpu_bucket,
-                      int64_t result_ne0) {
+                      int64_t result_ne0) //ne[0] 
+{ 
     bool is_node = false;
 
     if (a->grad || b->grad) {
@@ -4125,8 +4126,8 @@ struct ggml_tensor * ggml_mul_mat_idx_upscale(
 
 struct ggml_tensor * ggml_mul_mat_idx(
         struct ggml_context * ctx,
-        struct ggml_tensor  * a,
-        struct ggml_tensor  * b,
+        struct ggml_tensor  * a, // up
+        struct ggml_tensor  * b, // ffn_input
         struct ggml_tensor  * sparse_idx,
         // Under hybrid inference, this tensor is to indicate which row are offloaded to GPU;
         // When using full GPU inference, it is NULL.
@@ -14026,7 +14027,7 @@ static void ggml_compute_forward_mul_mat_sparse_head(
     
 
 }
-
+// important function
 static void ggml_compute_forward_mul_mat_sparse(
         const struct ggml_compute_params * params,
         const struct ggml_tensor * src0,
@@ -14059,7 +14060,7 @@ static void ggml_compute_forward_mul_mat_sparse(
     GGML_ASSERT(nb00 == ggml_type_size(type));
     GGML_ASSERT(nb10 == sizeof(float));
 
-    // dst cannot be transposed or permuted
+    // dst cannot be transposed or permuted 不能被转置或排列
     GGML_ASSERT(nb0 == sizeof(float));
     GGML_ASSERT(nb0 <= nb1);
     GGML_ASSERT(nb1 <= nb2);
@@ -14239,7 +14240,7 @@ static void ggml_compute_forward_mul_mat_sparse(
 
                     const char *src0_row = (const char *)src0->data + (0 + i02 * nb02 + i03 * nb03);
 
-                    // desc: when src1 is not a contiguous memory block we have to calculate the offset using the strides
+                    // desc: when src1 is not a contiguous memory block(连续内存块) we have to calculate the offset using the strides
                     //       if it is, then we have either copied the data to params->wdata and made it contiguous or we are using
                     //       the original src1 data pointer, so we should index using the indices directly
                     // TODO: this is a bit of a hack, we should probably have a better way to handle this
@@ -14920,23 +14921,39 @@ static void ggml_ensure_tensor_data_at_memory(struct ggml_tensor * tensor) {
     UNUSED(tensor);
 #endif
 }
-
+// important function
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
+    
+    if(tensor->op == GGML_OP_ADD)
+    {
+        if(tensor->src[0]->op == GGML_OP_MUL_MAT_SPARSE && tensor->src[0]->src[0]->backend == GGML_BACKEND_CPU
+        && tensor->src[1]->op == GGML_OP_MUL_MAT_SPARSE && tensor->src[1]->src[0]->backend == GGML_BACKEND_GPU)
+        {
+            
+            FILE *file = fopen("time.txt", "a");
+            fprintf(file, "CPU_exe_time:%.3f, GPU_exe_time:%.3f\n", tensor->src[0]->perf_time_us/1000.0, tensor->src[1]->perf_time_us/1000.0);
+            fclose(file);
+        }
+    }
+
     GGML_ASSERT(params);
 
     if (tensor->op == GGML_OP_NONE) {
         return;
     }
-
+// 对于一个要计算的tensor，首先就要考虑是不是可以在GPU上进行并行计算
 #ifdef GGML_USE_CUBLAS
-    bool skip_cpu = ggml_cuda_compute_forward(params, tensor);
+    int64_t gpu_begin_time = ggml_time_us();
+    bool skip_cpu = ggml_cuda_compute_forward(params, tensor); // 
     if (skip_cpu) {
+        if(tensor->op == GGML_OP_MUL_MAT_SPARSE)
+            tensor->perf_time_us = ggml_time_us() - gpu_begin_time;
         return;
     }
     // Make sure src[0] (weight for binary ops) is on CPU to avoid any weight transfer
     GGML_ASSERT((tensor->src[0] == NULL || tensor->src[0]->backend == GGML_BACKEND_CPU) && "weight should be on the CPU to compute on the CPU");
 #endif // GGML_USE_CUBLAS
-
+    // 下边写的计算过程就是针对CPU中的计算
     switch (tensor->op) {
         case GGML_OP_DUP:
             {
@@ -15041,14 +15058,19 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                 ggml_ensure_tensor_data_at_memory(tensor->src[1]);
                 ggml_ensure_tensor_data_at_memory(tensor->src[2]);
 
+                int64_t wf_begin_time = ggml_time_us();
                 if (tensor->src[2]->ne[0] > 1000) {
                     ggml_compute_forward_mul_mat_sparse(params, tensor->src[0], tensor->src[1], tensor);
-                } else {
+                } 
+                else 
+                {
                     // if (params->ith == 0)
                     //     printf("name %s num %d\n", ggml_get_name(tensor), num);
                     ggml_compute_forward_mul_mat_sparse_head(params, tensor->src[0], tensor->src[1], tensor);
                     // ggml_compute_forward_mul_mat(params, tensor->src[0], tensor->src[1], tensor);
                 } 
+                int64_t wf_end_time = ggml_time_us();
+                tensor->perf_time_us = wf_end_time - wf_begin_time;
             } break;
         case GGML_OP_AXPY:
             {
@@ -17010,7 +17032,8 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
     int node_n = -1;
 
-    while (true) {
+    while (true) 
+    {
         if (cplan->abort_callback && cplan->abort_callback(cplan->abort_callback_data)) {
             state->shared->node_n += 1;
             return (thread_ret_t) GGML_EXIT_ABORTED;
@@ -17078,7 +17101,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
             atomic_store(&state->shared->n_active, n_threads);
             atomic_store(&state->shared->node_n,   node_n);
-        } else {
+        } 
+        else 
+        {
             // wait for other threads to finish
             const int last = node_n;
             while (true) {
@@ -17120,7 +17145,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
 }
 
-
+// 混合线程处理
 static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
 
@@ -17129,7 +17154,7 @@ static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
 
     const int   n_threads   = state->shared->n_threads;
 
-    set_numa_thread_affinity(state->ith, n_threads);
+    set_numa_thread_affinity(state->ith, n_threads); // 为当前线程设置numa亲和性
 
     // cpu_set_t mask;
     // CPU_ZERO(&mask);
@@ -17141,11 +17166,13 @@ static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
     int node_n = -1;
 
     while (true) {
-        if (cplan->abort_callback && cplan->abort_callback(cplan->abort_callback_data)) {
+        if (cplan->abort_callback && cplan->abort_callback(cplan->abort_callback_data)) 
+        {
             state->shared->node_n += 1;
             return (thread_ret_t) GGML_EXIT_ABORTED;
         }
-        if (state->ith == 0)
+        // 线程标号为0，主线程？
+        if (state->ith == 0) 
         {
             // atomic_fetch_sub(&state->shared->n_active, 1);
             node_n = -1;
@@ -17158,10 +17185,11 @@ static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
                 node_n = node_n + 1;
                 if (node_n >= cgraph->n_nodes)
                     return 0;
-                struct ggml_tensor *node = cgraph->nodes[node_n];
+                struct ggml_tensor *node = cgraph->nodes[node_n]; // 本次要计算的图节点
                 if (node->backend == GGML_BACKEND_CPU)
                     continue;
                 // uint64_t dbug = 0;
+                // 判断改计算节点的所有前置节点的计算任务是否都完成
                 while (1)
                 {
                     // dbug++;
@@ -17196,7 +17224,7 @@ static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
 
                 // printf("GPU %s\n", ggml_get_name(node));
                 // cudaDeviceSynchronize();
-                ggml_compute_forward(&params, node);
+                ggml_compute_forward(&params, node); //计算节点的前向传播
                 // cudaDeviceSynchronize();
                 // ggml_graph_compute_perf_stats_node_gpu(node, state->shared);
                 ggml_graph_compute_perf_stats_node_gpu(node, state->shared);
@@ -17205,7 +17233,8 @@ static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
                 atomic_store(&node->is_finish, 1);
             }
         }
-        if (atomic_fetch_sub(&state->shared->n_active, 1) == 1) {
+        if (atomic_fetch_sub(&state->shared->n_active, 1) == 1) // 判断所有的并行线程是否执行完成， true表都执行完成
+        {
             // all other threads are finished and spinning
             // do finalize and init here so we don't have synchronize again
             struct ggml_compute_params params = {
@@ -17285,10 +17314,13 @@ static thread_ret_t ggml_graph_compute_thread_hybrid(void * data) {
 
             atomic_store(&state->shared->n_active, n_threads);
             atomic_store(&state->shared->node_n,   node_n);
-        } else {
+        }
+        else 
+        {
             // wait for other threads to finish
             const int last = node_n;
-            while (true) {
+            while (true) 
+            {
                 // TODO: this sched_yield can have significant impact on the performance - either positive or negative
                 //       depending on the workload and the operating system.
                 //       since it is not clear what is the best approach, it should potentially become user-configurable
@@ -17559,14 +17591,17 @@ int ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
         /*.abort_callback_data     =*/ NULL,
     };
 #endif
+    //  workers每个线程的工作状态
     struct ggml_compute_state * workers = alloca(sizeof(struct ggml_compute_state)*n_threads);
 
     // create thread pool
     if (n_threads > 1) {
-        for (int j = 1; j < n_threads; ++j) {
-            workers[j] = (struct ggml_compute_state) {
+        for (int j = 1; j < n_threads; ++j) 
+        { // 为除主工作线程外的其它线程进行初始化
+            workers[j] = (struct ggml_compute_state) 
+            {
                 .thrd   = 0,
-                .ith = j,
+                .ith = j, //每个线程的标号 
                 .shared = &state_shared,
             };
 #ifdef GGML_USE_HYBRID_THREADING
@@ -17612,7 +17647,7 @@ int ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
         cgraph->perf_runs++;
         cgraph->perf_cycles  += perf_cycles_cur;
         cgraph->perf_time_us += perf_time_us_cur;
-
+        
         GGML_PRINT_DEBUG("%s: perf (%d) - cpu = %.3f / %.3f ms, wall = %.3f / %.3f ms\n",
                 __func__, cgraph->perf_runs,
                 (double) perf_cycles_cur      / (double) ggml_cycles_per_ms(),

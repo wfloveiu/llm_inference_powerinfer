@@ -177,7 +177,7 @@ int main(int argc, char ** argv) {
 
     // load the model and apply lora adapter, if any
     LOG("%s: load the model and apply lora adapter, if any\n", __func__);
-    std::tie(model, ctx) = llama_init_from_gpt_params(params);
+    std::tie(model, ctx) = llama_init_from_gpt_params(params); // important function
     if (sparams.cfg_scale > 1.f) {
         struct llama_context_params lparams = llama_context_params_from_gpt_params(params);
         ctx_guidance = llama_new_context_with_model(model, lparams);
@@ -442,7 +442,7 @@ int main(int argc, char ** argv) {
     bool need_to_save_session = !path_session.empty() && n_matching_session_tokens < embd_inp.size();
 
     int n_past             = 0;
-    int n_remain           = params.n_predict;
+    int n_remain           = params.n_predict; //还未预测的token数量
     int n_consumed         = 0;
     int n_session_consumed = 0;
     int n_past_guidance    = 0;
@@ -454,7 +454,7 @@ int main(int argc, char ** argv) {
     // the first thing we will do is to output the prompt, so set color accordingly
     console::set_display(console::prompt);
 
-    std::vector<llama_token> embd;
+    std::vector<llama_token> embd; //
     std::vector<llama_token> embd_guidance;
 
     struct llama_sampling_context * ctx_sampling = llama_sampling_init(sparams);
@@ -573,14 +573,17 @@ int main(int argc, char ** argv) {
             }
 
             for (int i = 0; i < (int) embd.size(); i += params.n_batch) {
+                // printf("\n%d\n",(int) embd.size());
                 int n_eval = (int) embd.size() - i;
                 if (n_eval > params.n_batch) {
                     n_eval = params.n_batch;
                 }
-
+                // n_eval每次处理的数量
                 LOG("eval: %s\n", LOG_TOKENS_TOSTR_PRETTY(ctx, embd).c_str());
-
-                if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval, n_past, 0))) {
+                // 首先通过llama_batch_get_one获取一个batch实例
+                // n_eval:每批次处理的token数
+                // n_past:累计处理的token数
+                if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval, n_past, 0))) { // important function
                     LOG_TEE("%s : failed to eval\n", __func__);
                     return 1;
                 }
@@ -623,7 +626,9 @@ int main(int argc, char ** argv) {
             --n_remain;
 
             LOG("n_remain: %d\n", n_remain);
-        } else {
+        } 
+        else 
+        {
             // some user input remains from prompt or interaction, forward it to processing
             LOG("embd_inp.size(): %d, n_consumed: %d\n", (int) embd_inp.size(), n_consumed);
             while ((int) embd_inp.size() > n_consumed) {
@@ -653,7 +658,7 @@ int main(int argc, char ** argv) {
                     output_ss << token_str;
                 }
             }
-            fflush(stdout);
+            fflush(stdout); //确保输出缓冲区的内容都已经完成输出了
         }
         // reset color to default if there is no pending user input
         if (input_echo && (int) embd_inp.size() == n_consumed) {

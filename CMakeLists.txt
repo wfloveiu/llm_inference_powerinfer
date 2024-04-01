@@ -3,7 +3,11 @@ project("llama.cpp" C CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(CMAKE_BUILD_TYPE "Debug")
+# message("message to print1")
 if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
+    # message("message to print2")
+
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()

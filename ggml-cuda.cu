@@ -6381,7 +6381,7 @@ void ggml_init_cublas() {
             cudaDeviceProp prop;
             CUDA_CHECK(cudaGetDeviceProperties(&prop, id));
             fprintf(stderr, "  Device %d: %s, compute capability %d.%d\n", id, prop.name, prop.major, prop.minor);
-
+            // major和minor分别是主版本号和子版本号
             g_tensor_split[id] = total_vram;
             total_vram += prop.totalGlobalMem;
 #if defined(GGML_USE_HIPBLAS) && defined(__HIP_PLATFORM_AMD__)
@@ -9020,20 +9020,27 @@ void ggml_cuda_free_scratch() {
     g_scratch_buffer = nullptr;
 }
 
+// important function
 bool ggml_cuda_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
     if (!g_cublas_loaded) return false;
 
     ggml_cuda_func_t func;
-    const bool src0_on_device = tensor->src[0] != nullptr && (tensor->src[0]->backend != GGML_BACKEND_CPU);
+    // src[0], 权重矩阵（向量）
+    // src[1], 输入矩阵（向量）
+    const bool src0_on_device = tensor->src[0] != nullptr && (tensor->src[0]->backend != GGML_BACKEND_CPU); // src0_on_device=true, src0在GPU
+    // 权重在GPU上||输入在GPU上||tensor本身在GPU上，则any_on_device=true
+    // !any_on_device说明进行计算的数据都在CPU上，那么就直接在CPU上计算
     const bool any_on_device = tensor->backend == GGML_BACKEND_GPU || src0_on_device
         || (tensor->src[1] != nullptr && tensor->src[1]->backend == GGML_BACKEND_GPU);
 
     // when src0 (weights) is not on device, we compute on CPU with sparsity
+    // 如果权重矩阵在CPU并且操作符是我们额外添加的MAT_SPARSE||OP_AXPY（因为在CPU上保存了ffn层的原始weight，在GPU中保存了sliced后的weight，因此通过src[0]的
+    // 位置就可以判断这是计算CPU中神经元还是GPU）, 或者!any_on_device
     if (!src0_on_device && (tensor->op == GGML_OP_MUL_MAT_SPARSE || tensor->op == GGML_OP_AXPY)
         || !any_on_device && tensor->op != GGML_OP_MUL_MAT) {
         return false;
     }
-
+    // 两个tensor维度不同
     if (tensor->op == GGML_OP_MUL_MAT) {
         if (tensor->src[0]->ne[3] != tensor->src[1]->ne[3]) {
 #ifndef NDEBUG

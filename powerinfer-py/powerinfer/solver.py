@@ -6,7 +6,7 @@ import numpy as np
 from cvxopt import matrix
 import torch
 import pickle
-
+# 使用整数线性规划解决神经元的放置问题
 def solve_gpu_split(
     activation_path: str,
     neuron: int,
